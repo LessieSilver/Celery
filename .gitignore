@@ -1,0 +1,24 @@
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+uploads/
+processed/
+*.log
+.env
+.env.local
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+Thumbs.db
+.DS_Store
+.ipynb_checkpoints/
+echo "EDSR_x2.pb" >> .gitignore
+echo "*.pb" >> .gitignore
