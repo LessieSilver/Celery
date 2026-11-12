@@ -1,25 +1,40 @@
 import cv2
 from cv2 import dnn_superres
+import numpy as np
+
+_scaler = None
 
 
-def upscale(input_path: str, output_path: str, model_path: str = 'EDSR_x2.pb') -> None:
-    """
-    :param input_path: путь к изображению для апскейла
-    :param output_path:  путь к выходному файлу
-    :param model_path: путь к ИИ модели
-    :return:
-    """
+def _get_scaler(model_path: str = 'EDSR_x2.pb'):
+    global _scaler
+    if _scaler is None:
+        _scaler = dnn_superres.DnnSuperResImpl_create()
+        _scaler.readModel(model_path)
+        _scaler.setModel("edsr", 2)
+    return _scaler
 
-    scaler = dnn_superres.DnnSuperResImpl_create()
-    scaler.readModel(model_path)
-    scaler.setModel("edsr", 2)
-    image = cv2.imread(input_path)
+
+def upscale_bytes(image_bytes: bytes, model_path: str = 'EDSR_x2.pb') -> bytes:
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError("Failed to decode image")
+
+    scaler = _get_scaler(model_path)
     result = scaler.upsample(image)
-    cv2.imwrite(output_path, result)
+
+    success, buffer = cv2.imencode('.png', result)
+    if not success:
+        raise ValueError("Failed to encode result image")
+    return buffer.tobytes()
 
 
 def example():
-    upscale('lama_300px.png', 'lama_600px.png')
+    with open('lama_300px.png', 'rb') as f:
+        input_bytes = f.read()
+    output_bytes = upscale_bytes(input_bytes)
+    with open('lama_600px.png', 'wb') as f:
+        f.write(output_bytes)
 
 
 if __name__ == '__main__':

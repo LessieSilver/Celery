@@ -1,92 +1,99 @@
 import os
-import uuid
-from flask import Flask, request, jsonify, send_from_directory, url_for
-from werkzeug.utils import secure_filename
+import base64
+from flask import Flask, request, jsonify, Response, url_for
 from celery import Celery
-from upscale import upscale
+from celery.signals import worker_init
+
+from upscale import upscale_bytes, _get_scaler
 
 app = Flask(__name__)
 
+BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://redis:6379/0')
+RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
+
 app.config.update(
-    CELERY_BROKER_URL='redis://localhost:6379/0',
-    CELERY_RESULT_BACKEND='redis://localhost:6379/0'
+    broker_url=BROKER_URL,
+    result_backend=RESULT_BACKEND,
 )
 
-
-def make_celery(app):
-    celery = Celery(
-        app.import_name,
-        broker=app.config['CELERY_BROKER_URL'],
-        backend=app.config['CELERY_RESULT_BACKEND']
-    )
-    celery.conf.update(app.config)
-    return celery
+celery = Celery(
+    app.import_name,
+    broker=BROKER_URL,
+    backend=RESULT_BACKEND,
+)
+celery.conf.update(app.config)
 
 
-celery = make_celery(app)
-
-UPLOAD_FOLDER = 'uploads'
-PROCESSED_FOLDER = 'processed'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(PROCESSED_FOLDER, exist_ok=True)
-
-MODEL_PATH = 'EDSR_x2.pb'
+@worker_init.connect
+def init_worker(**kwargs):
+    print("[worker_init] Loading EDSR model...")
+    _get_scaler()
+    print("[worker_init] Model loaded.")
 
 
 @celery.task(name='app.process_image')
-def process_image_task(input_filepath, output_filepath):
-    upscale(input_filepath, output_filepath, model_path=MODEL_PATH)
+def process_image_task(image_b64: str):
+    image_bytes = base64.b64decode(image_b64)
+    result_bytes = upscale_bytes(image_bytes)
+    return base64.b64encode(result_bytes).decode('utf-8')
 
-    return os.path.basename(output_filepath)
 
+@app.route('/')
+def index():
+    return jsonify({
+        'message': 'Image Upscaling Service',
+        'endpoints': {
+            'POST /upscale': 'Upload image (field: image)',
+            'GET /tasks/<task_id>': 'Get task status',
+            'GET /processed/<task_id>': 'Download processed image',
+        }
+    })
 
 
 @app.route('/upscale', methods=['POST'])
 def upscale_image():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file part in the request'}), 400
+    if 'image' not in request.files:
+        return jsonify({'error': "No 'image' field in the request"}), 400
 
-    file = request.files['file']
+    file = request.files['image']
     if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
+        return jsonify({'error': 'Empty filename'}), 400
 
-    filename = secure_filename(file.filename)
-    unique_filename = f"{uuid.uuid4().hex}_{filename}"
-    input_filepath = os.path.join(UPLOAD_FOLDER, unique_filename)
-    file.save(input_filepath)
+    image_bytes = file.read()
+    if not image_bytes:
+        return jsonify({'error': 'Empty file'}), 400
 
-    name, ext = os.path.splitext(unique_filename)
-    output_filename = f"{name}_upscaled{ext}"
-    output_filepath = os.path.join(PROCESSED_FOLDER, output_filename)
+    image_b64 = base64.b64encode(image_bytes).decode('utf-8')
 
-    task = process_image_task.delay(input_filepath, output_filepath)
-
+    task = process_image_task.delay(image_b64)
     return jsonify({'task_id': task.id}), 202
 
 
 @app.route('/tasks/<task_id>', methods=['GET'])
 def get_task_status(task_id):
     task = process_image_task.AsyncResult(task_id)
-
-    response = {
-        'task_id': task_id,
-        'status': task.state
-    }
+    response = {'task_id': task_id, 'status': task.state}
 
     if task.state == 'SUCCESS':
-        output_filename = task.result
-        result_url = url_for('get_processed_file', filename=output_filename, _external=True)
-        response['result_url'] = result_url
+        response['result_url'] = url_for('get_processed_file', task_id=task_id, _external=True)
     elif task.state == 'FAILURE':
         response['error'] = str(task.info)
 
     return jsonify(response)
 
 
-@app.route('/processed/<path:filename>', methods=['GET'])
-def get_processed_file(filename):
-    return send_from_directory(PROCESSED_FOLDER, filename)
+@app.route('/processed/<task_id>', methods=['GET'])
+def get_processed_file(task_id):
+    task = process_image_task.AsyncResult(task_id)
+
+    if task.state != 'SUCCESS':
+        return jsonify({'error': 'Task not ready', 'status': task.state}), 400
+
+    result_b64 = task.result
+    result_bytes = base64.b64decode(result_b64)
+
+    return Response(result_bytes, mimetype='image/png')
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=False)

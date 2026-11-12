@@ -1,12 +1,14 @@
-.venv/
-venv/
-env/
-ENV/
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
 uploads/
 processed/
 *.log
@@ -15,10 +17,6 @@ processed/
 .idea/
 .vscode/
 *.swp
-*.swo
-*~
 Thumbs.db
 .DS_Store
-.ipynb_checkpoints/
-echo "EDSR_x2.pb" >> .gitignore
-echo "*.pb" >> .gitignore
+*.pb
